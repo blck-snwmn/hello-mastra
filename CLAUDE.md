@@ -4,10 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Mastra-based weather application that:
-- Retrieves weather information for a given city using Open-Meteo API
-- Uses Google Gemini AI to provide weather-based activity suggestions
-- Maintains conversation history using LibSQL
+This is a Mastra-based application with two main features:
+1. **Weather Service**: Retrieves weather information using Open-Meteo API and provides AI-powered activity suggestions via Google Gemini
+2. **Ranka Chat Bot**: An AI agent embodying Ranka Oborozuki, a 200+ year old fox yokai character who runs an antique bookstore
 
 ## Development Commands
 
@@ -31,30 +30,68 @@ pnpm build
 pnpm start
 ```
 
+### Run Tests
+```bash
+# Run all tests
+pnpm test
+
+# Run only evaluation tests
+pnpm test:eval
+
+# Note: Evaluation tests are automatically skipped in CI environments
+```
+
 ## Architecture Overview
 
 The application follows Mastra's agent-based architecture:
 
-1. **Agents** (`src/mastra/agents/`): AI agents that process natural language using Google Gemini
-   - `weather-agent.ts`: Handles weather-related queries and generates activity suggestions
+### Core Components (`src/mastra/`)
 
-2. **Tools** (`src/mastra/tools/`): External API integrations wrapped as tools
-   - `weather-tool.ts`: Interfaces with Open-Meteo API for geocoding and weather data
+1. **Agents** (`agents/`): AI agents powered by Google Gemini
+   - `weather-agent.ts`: Processes weather queries and generates activity suggestions
+   - `ranka-agent.ts`: Embodies Ranka Oborozuki character with specific speech patterns
 
-3. **Workflows** (`src/mastra/workflows/`): Step-based processing flows
-   - `weather-workflow.ts`: Orchestrates the flow from city input → weather fetch → activity suggestion
+2. **Tools** (`tools/`): External API integrations
+   - `weather-tool.ts`: Wraps Open-Meteo API for geocoding and weather data retrieval
 
-4. **Main Configuration** (`src/mastra/index.ts`): Initializes Mastra with agents, workflows, storage, and logging
+3. **Workflows** (`workflows/`): Multi-step processing flows
+   - `weather-workflow.ts`: Orchestrates city → weather → activity suggestion pipeline
 
-## Key Technical Details
+4. **Evaluations** (`evals/`): Quality metrics for agents
+   - `ranka-gobi-metric.ts`: Validates Ranka's speech patterns using NLP analysis
 
-- **TypeScript Configuration**: ES2022 target with bundler module resolution
-- **Storage**: LibSQL (SQLite-based) - defaults to `:memory:`, can be changed to `file:../mastra.db` for persistence
-- **Environment Variables**: Requires `GOOGLE_AI_API_KEY` in `.env` file
-- **Node Version**: Requires Node.js >= 20.9.0
+5. **Main Configuration** (`index.ts`): Initializes Mastra with all components
+
+## Technical Requirements
+
+- **Node.js**: >= 20.9.0
+- **Module System**: ESM (ES Modules)
+- **TypeScript**: ES2022 target with bundler module resolution
+- **Environment Variables**: 
+  - `GOOGLE_AI_API_KEY` (required in `.env` file)
+- **Storage**: LibSQL (SQLite-based)
+  - Default: `:memory:` (in-memory)
+  - Persistent: Change to `file:../mastra.db` in `src/mastra/index.ts`
+
+## Agent-Specific Guidelines
+
+### Ranka Agent
+When working with the Ranka agent:
+- Character maintains specific speech patterns ending with だじぇ/のじぇ/じぇ
+- Evaluation metrics check for:
+  - Presence of required speech endings
+  - Absence of modern expressions
+  - Overall tone consistency
+- Test with: `pnpm test:eval` to verify speech pattern compliance
+
+### Weather Agent
+- Uses structured tools for geocoding and weather data
+- Responses should be concise and activity-focused
+- Memory enabled for conversation context
 
 ## Important Notes
 
-- No test framework is currently set up (test script exits with error)
-- The project uses ESM modules (`"type": "module"` in package.json)
-- Mastra CLI (`mastra`) is used for development and build commands
+- Mastra CLI (`mastra`) handles build and development commands internally
+- The project uses Google's Gemini 2.5 Pro experimental model
+- All agents have memory capabilities for maintaining conversation history
+- Evaluation tests provide quality assurance for agent behaviors
