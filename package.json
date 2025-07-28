@@ -5,6 +5,7 @@
   "scripts": {
     "test": "vitest",
     "test:ui": "vitest --ui",
+    "test:eval": "vitest **/*.eval.test.ts",
     "dev": "mastra dev",
     "build": "mastra build",
     "start": "mastra start"
