@@ -3,6 +3,7 @@ import { Agent } from '@mastra/core/agent';
 import { Memory } from '@mastra/memory';
 import { LibSQLStore } from '@mastra/libsql';
 import { RankaGobiMetric } from '../evals/ranka-gobi-metric';
+import { ToneConsistencyMetric } from '@mastra/evals/nlp';
 
 export const rankaAgent = new Agent({
   name: 'Ranka Agent',
@@ -73,5 +74,6 @@ export const rankaAgent = new Agent({
   }),
   evals: {
     gobiChecker: new RankaGobiMetric(),
+    toneConsistency: new ToneConsistencyMetric(),
   },
 });
