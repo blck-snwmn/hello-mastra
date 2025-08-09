@@ -1,11 +1,22 @@
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { z } from 'zod';
 
+const questionsSchema = z.object({
+  questions: z.array(z.object({
+    question: z.string().describe('質問内容'),
+    type: z.string().describe('質問のタイプ（introduction/memory/desire/riddle）'),
+  })).length(4).describe('4つの質問'),
+});
+
 const soulDataSchema = z.object({
   responses: z.array(z.string()).describe('ユーザーの回答履歴'),
   emotionalState: z.string().describe('感情状態の分析'),
   deepDesire: z.string().describe('深層心理の願望'),
   riddleAnswer: z.string().optional().describe('謎かけの答え'),
+  questions: z.array(z.object({
+    question: z.string(),
+    type: z.string(),
+  })).describe('使用された質問リスト'),
 });
 
 const soulBookSchema = z.object({
@@ -22,10 +33,88 @@ const soulBookSchema = z.object({
   finalMessage: z.string().describe('最後のメッセージ'),
 });
 
+const generateQuestions = createStep({
+  id: 'generate-questions',
+  description: '魂の本を見つけるための質問を生成',
+  inputSchema: z.object({
+    previousResponses: z.array(z.string()).optional(),
+  }),
+  outputSchema: questionsSchema,
+  execute: async ({ mastra }) => {
+    const agent = mastra?.getAgent('rankaAgent');
+    if (!agent) {
+      throw new Error('Ranka agent not found');
+    }
+
+    const prompt = `お客様が「魂の一冊」を探しに来ました。
+    お客様の魂に最も響く本を見つけるために、4つの質問を考えてください。
+    
+    質問は以下の順番で構成してください：
+    1. 導入的な質問（今の気分や最近の出来事など、リラックスさせる質問）
+    2. 記憶に関する質問（心に残っている思い出や忘れられない本・物語など）
+    3. 願望に関する質問（本当に求めているもの、心の奥の願いなど）
+    4. 謎かけ（これまでの会話から導き出せる、深い洞察を要する質問）
+    
+    以下の形式で答えてください：
+    
+    質問1: [導入的な質問]
+    タイプ1: introduction
+    
+    質問2: [記憶に関する質問]
+    タイプ2: memory
+    
+    質問3: [願望に関する質問]
+    タイプ3: desire
+    
+    質問4: [謎かけの質問]
+    タイプ4: riddle`;
+
+    const response = await agent.generate([
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ]);
+
+    const responseText = response.text || '';
+    
+    const questions = [];
+    for (let i = 1; i <= 4; i++) {
+      const questionMatch = responseText.match(new RegExp(`質問${i}:\\s*(.+?)(?=タイプ${i}:|$)`, 's'));
+      const typeMatch = responseText.match(new RegExp(`タイプ${i}:\\s*(.+?)(?=質問${i + 1}:|$)`, 's'));
+      
+      if (questionMatch && typeMatch) {
+        questions.push({
+          question: questionMatch[1].trim(),
+          type: typeMatch[1].trim(),
+        });
+      }
+    }
+
+    if (questions.length !== 4) {
+      // フォールバック質問
+      return {
+        questions: [
+          { question: '今日はどのような気持ちでいらっしゃいましたか？', type: 'introduction' },
+          { question: '心に残っている物語や本はありますか？', type: 'memory' },
+          { question: '今、本当に求めているものは何ですか？', type: 'desire' },
+          { question: '過去と未来、どちらに答えがあると思いますか？', type: 'riddle' },
+        ],
+      };
+    }
+
+    return { questions };
+  },
+});
+
 const exploreSoul = createStep({
   id: 'explore-soul',
   description: '対話を通じて魂の深層を探る',
   inputSchema: z.object({
+    questions: z.array(z.object({
+      question: z.string(),
+      type: z.string(),
+    })),
     previousResponses: z.array(z.string()).optional(),
   }),
   outputSchema: soulDataSchema,
@@ -34,10 +123,18 @@ const exploreSoul = createStep({
     questionType: z.string().describe('質問のタイプ'),
     depth: z.number().describe('質問の深さレベル'),
     responses: z.array(z.string()).describe('これまでの回答履歴'),
+    questions: z.array(z.object({
+      question: z.string(),
+      type: z.string(),
+    })).describe('質問リスト'),
   }),
   resumeSchema: z.object({
     userResponse: z.string().describe('ユーザーの回答'),
     previousResponses: z.array(z.string()).optional().describe('これまでの回答履歴'),
+    questions: z.array(z.object({
+      question: z.string(),
+      type: z.string(),
+    })).describe('質問リスト'),
   }),
   execute: async ({ inputData, resumeData, suspend, mastra }) => {
     const agent = mastra?.getAgent('rankaAgent');
@@ -45,57 +142,43 @@ const exploreSoul = createStep({
       throw new Error('Ranka agent not found');
     }
 
-    // resumeDataから前回の回答履歴を取得、なければinputDataから
+    const questions = resumeData?.questions || inputData?.questions || [];
+    if (questions.length === 0) {
+      throw new Error('Questions are required');
+    }
+
     const previousResponses = resumeData?.previousResponses || inputData?.previousResponses || [];
     
     if (!resumeData) {
       const depth = previousResponses.length + 1;
+      if (depth > 4) {
+        throw new Error('Already asked all questions');
+      }
+
+      const currentQuestion = questions[depth - 1];
       let prompt = '';
-      let questionType = '';
       
       if (depth === 1) {
-        questionType = 'introduction';
-        prompt = `あなたは月読堂の朧月蘭華です。
-        お客様が「魂の一冊」を探しに来ました。
-        まず、優雅で神秘的な挨拶をして、今の気分や最近の出来事について尋ねてください。
-        狐の妖怪としての洞察力を感じさせながら、親しみやすく接してください。`;
-      } else if (depth === 2) {
-        questionType = 'memory';
-        prompt = `あなたは月読堂の朧月蘭華です。
-        お客様との対話が続いています。
+        prompt = `お客様が「魂の一冊」を探しに来ました。
+        挨拶をして、以下の質問をしてください：
+        「${currentQuestion.question}」
         
-        前回のお客様の回答: 「${previousResponses[0]}」
+        親しみやすく接してください。`;
+      } else {
+        const conversationHistory = previousResponses.map((r, i) => 
+          `質問${i + 1}: ${questions[i].question}\n回答${i + 1}: ${r}`
+        ).join('\n\n');
+
+        prompt = `お客様との対話が続いています。
         
-        お客様の答えに対して軽く反応した後、
-        次の質問として、心に残っている思い出や、忘れられない本・物語について聞いてください。
+        これまでの会話:
+        ${conversationHistory}
+        
+        前回の答えに対して適切に反応した後、次の質問をしてください：
+        「${currentQuestion.question}」
+        
+        ${depth === 4 ? '「では、最後にこの謎かけにお答えくださいませ」という導入を使ってください。' : ''}
         自然な会話の流れを大切に。挨拶は不要です。`;
-      } else if (depth === 3) {
-        questionType = 'desire';
-        prompt = `あなたは月読堂の朧月蘭華です。
-        お客様との対話が続いています。
-        
-        これまでの会話:
-        1. ${previousResponses[0]}
-        2. ${previousResponses[1]}
-        
-        前回の答えに対して共感を示した後、
-        今度は、本当に求めているもの、心の奥の願いについて、
-        優しく、でも核心に迫る質問をしてください。
-        挨拶は不要です。`;
-      } else if (depth === 4) {
-        questionType = 'riddle';
-        prompt = `あなたは月読堂の朧月蘭華です。
-        お客様との対話が続いています。
-        
-        これまでの会話:
-        1. ${previousResponses[0]}
-        2. ${previousResponses[1]}
-        3. ${previousResponses[2]}
-        
-        前回の答えに優しく反応した後、
-        「では、最後にこの謎かけにお答えくださいませ」という導入で月読堂の古い謎かけを出してください。
-        答えは簡単ではないが、これまでの会話から導き出せるものにしてください。
-        挨拶は不要です。`;
       }
 
       const response = await agent.generate([
@@ -112,9 +195,10 @@ const exploreSoul = createStep({
       
       await suspend({
         rankaQuestion: rankaQuestion,
-        questionType: questionType,
+        questionType: currentQuestion.type,
         depth: depth,
         responses: previousResponses,
+        questions: questions,
       });
 
       return {
@@ -122,6 +206,7 @@ const exploreSoul = createStep({
         emotionalState: '',
         deepDesire: '',
         riddleAnswer: undefined,
+        questions: questions,
       };
     }
 
@@ -130,11 +215,14 @@ const exploreSoul = createStep({
     console.log('[DEBUG workflow] allResponses.length:', allResponses.length);
     
     if (allResponses.length >= 4) {
-      const analyzePrompt = `あなたは月読堂の朧月蘭華です。
-      お客様との対話から、以下を分析してください：
+      const conversationHistory = allResponses.map((r, i) => 
+        `質問${i + 1}: ${questions[i].question}\n回答${i + 1}: ${r}`
+      ).join('\n\n');
+
+      const analyzePrompt = `お客様との対話から、以下を分析してください：
       
-      回答履歴:
-      ${allResponses.map((r, i) => `${i + 1}. ${r}`).join('\n')}
+      会話履歴:
+      ${conversationHistory}
       
       以下の形式で答えてください：
       
@@ -157,50 +245,27 @@ const exploreSoul = createStep({
         emotionalState: emotionalMatch?.[1]?.trim() || '穏やかだが、何かを求めている',
         deepDesire: desireMatch?.[1]?.trim() || '失われた何かを取り戻したい',
         riddleAnswer: allResponses[3],
+        questions: questions,
       };
     }
 
     const depth = allResponses.length + 1;
-    let nextPrompt = '';
-    let nextType = '';
+    const nextQuestion = questions[depth - 1];
     
-    if (depth === 2) {
-      nextType = 'memory';
-      nextPrompt = `あなたは月読堂の朧月蘭華です。
-      お客様との対話が続いています。
-      
-      前回のお客様の回答: 「${resumeData.userResponse}」
-      
-      お客様の答えに対して軽く反応した後、
-      次の質問として、心に残っている思い出や、忘れられない本・物語について聞いてください。
-      自然な会話の流れを大切に。挨拶は不要です。`;
-    } else if (depth === 3) {
-      nextType = 'desire';
-      nextPrompt = `あなたは月読堂の朧月蘭華です。
-      お客様との対話が続いています。
-      
-      これまでの会話:
-      1. ${allResponses[0]}
-      2. ${resumeData.userResponse}
-      
-      前回の答えに対して共感を示した後、
-      今度は、本当に求めているもの、心の奥の願いについて、
-      優しく、でも核心に迫る質問をしてください。
-      挨拶は不要です。`;
-    } else if (depth === 4) {
-      nextType = 'riddle';
-      nextPrompt = `あなたは月読堂の朧月蘭華です。
-      お客様との対話が続いています。
-      
-      これまでの会話:
-      1. ${allResponses[0]}
-      2. ${allResponses[1]}
-      3. ${resumeData.userResponse}
-      
-      前回の答えに優しく反応した後、
-      「では、最後にこの謎かけにお答えくださいませ」という導入で月読堂の古い謎かけを出してください。
-      挨拶は不要です。`;
-    }
+    const conversationHistory = allResponses.map((r, i) => 
+      `質問${i + 1}: ${questions[i].question}\n回答${i + 1}: ${r}`
+    ).join('\n\n');
+
+    const nextPrompt = `お客様との対話が続いています。
+    
+    これまでの会話:
+    ${conversationHistory}
+    
+    前回の答えに対して適切に反応した後、次の質問をしてください：
+    「${nextQuestion.question}」
+    
+    ${depth === 4 ? '「では、最後にこの謎かけにお答えくださいませ」という導入を使ってください。' : ''}
+    自然な会話の流れを大切に。挨拶は不要です。`;
 
     const response = await agent.generate([
       {
@@ -212,11 +277,13 @@ const exploreSoul = createStep({
     if (!response.text) {
       throw new Error('Failed to generate Ranka response');
     }
+    
     await suspend({
       rankaQuestion: response.text,
-      questionType: nextType,
+      questionType: nextQuestion.type,
       depth: depth,
       responses: allResponses,
+      questions: questions,
     });
 
     return {
@@ -224,6 +291,7 @@ const exploreSoul = createStep({
       emotionalState: '',
       deepDesire: '',
       riddleAnswer: undefined,
+      questions: questions,
     };
   },
 });
@@ -247,14 +315,13 @@ const mysticalRevelation = createStep({
       throw new Error('Soul data is required');
     }
 
-    const prompt = `あなたは月読堂の朧月蘭華です。
-    お客様の魂の状態を読み取りました：
+    const prompt = `お客様の魂の状態を読み取りました：
     
     感情状態: ${inputData.emotionalState}
     深層の願望: ${inputData.deepDesire}
     謎かけの答え: ${inputData.riddleAnswer || '答えなし'}
     
-    狐の幻術で、お客様に見せる幻想的な光景を描写してください。
+    お客様に見せる幻想的な光景を描写してください。
     その光景は、運命の本へと導くヒントを含んでいます。
     
     以下の形式で答えてください：
@@ -302,15 +369,21 @@ const findSoulBook = createStep({
       throw new Error('Input data is required');
     }
 
-    const prompt = `あなたは月読堂の朧月蘭華です。
-    ついに、お客様の運命の一冊を選ぶ時が来ました。
+    const conversationHistory = inputData.soulData.responses.map((r, i) => 
+      `質問${i + 1}: ${inputData.soulData.questions[i].question}\n回答${i + 1}: ${r}`
+    ).join('\n\n');
+
+    const prompt = `ついに、お客様の運命の一冊を選ぶ時が来ました。
+    
+    お客様との会話:
+    ${conversationHistory}
     
     お客様の情報：
     - 感情状態: ${inputData.soulData.emotionalState}
     - 深層の願望: ${inputData.soulData.deepDesire}
     - 幻術のヒント: ${inputData.mysticalHint}
     
-    月読堂の特別な蔵書から、この方の魂に最も響く一冊を選んでください。
+    特別な蔵書から、この方の魂に最も響く一冊を選んでください。
     
     以下の形式で答えてください：
     
@@ -320,7 +393,7 @@ const findSoulBook = createStep({
     あらすじ: [200文字程度で物語の概要]
     なぜこの本か: [150文字程度で、なぜこの本が運命の一冊なのか]
     特別な力: [100文字程度で、この本が持つ不思議な力]
-    蘭華の啓示: [200文字程度で、深い洞察と共に]
+    啓示: [200文字程度で、深い洞察と共に]
     最後の言葉: [100文字程度で、別れ際の優雅な言葉]`;
 
     const response = await agent.generate([
@@ -337,8 +410,8 @@ const findSoulBook = createStep({
     const eraMatch = responseText.match(/時代背景:\s*(.+?)(?=あらすじ:|$)/s);
     const summaryMatch = responseText.match(/あらすじ:\s*(.+?)(?=なぜこの本か:|$)/s);
     const whyMatch = responseText.match(/なぜこの本か:\s*(.+?)(?=特別な力:|$)/s);
-    const powerMatch = responseText.match(/特別な力:\s*(.+?)(?=蘭華の啓示:|$)/s);
-    const revelationMatch = responseText.match(/蘭華の啓示:\s*(.+?)(?=最後の言葉:|$)/s);
+    const powerMatch = responseText.match(/特別な力:\s*(.+?)(?=啓示:|$)/s);
+    const revelationMatch = responseText.match(/啓示:\s*(.+?)(?=最後の言葉:|$)/s);
     const finalMatch = responseText.match(/最後の言葉:\s*(.+?)$/s);
 
     return {
@@ -369,6 +442,7 @@ const soulBookFinderWorkflow = createWorkflow({
   }),
   outputSchema: soulBookSchema,
 })
+  .then(generateQuestions)
   .then(exploreSoul)
   .then(mysticalRevelation)
   .then(findSoulBook);
